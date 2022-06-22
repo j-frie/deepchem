@@ -11,13 +11,14 @@ except ImportError:
 
 class TestCallbacks(unittest.TestCase):
 
-  @pytest.mark.torch
-  def test_validation(self):
-    """Test ValidationCallback."""
+  def validation_callback(self, model):
+    """Test ValidationCallback for given model.
+
+    The model can either be a TorchModel or a KerasModel.
+    It has to be a classifier with n_tasks = 2 and n_features = 1024."""
+
     tasks, datasets, transformers = dc.molnet.load_clintox()
     train_dataset, valid_dataset, test_dataset = datasets
-    n_features = 1024
-    model = dc.models.MultitaskClassifier(len(tasks), n_features, dropouts=0.5)
 
     # Train the model while logging the validation ROC AUC.
 
@@ -33,7 +34,6 @@ class TestCallbacks(unittest.TestCase):
     model.fit(train_dataset, callbacks=callback)
 
     # Parse the log to pull out the AUC scores.
-
     log.seek(0)
     scores = []
     for line in log:
@@ -41,7 +41,6 @@ class TestCallbacks(unittest.TestCase):
       scores.append(score)
 
     # The last reported score should match the current performance of the model.
-
     valid_score = model.evaluate(valid_dataset, [metric], transformers)
     self.assertAlmostEqual(valid_score['mean-roc_auc_score'],
                            scores[-1],
@@ -74,3 +73,17 @@ class TestCallbacks(unittest.TestCase):
       scores.append(score)
 
     self.assertTrue(abs(max(scores) - callback.get_best_score()) < 0.05)
+
+  @pytest.mark.torch
+  def test_validation_torch(self):
+    model = dc.models.MultitaskClassifier(n_tasks=2,
+                                          n_features=1024,
+                                          dropouts=0.5)
+    self.validation_callback(model)
+
+  @pytest.mark.tensorflow
+  def test_validation_keras(self):
+    model = dc.models.RobustMultitaskClassifier(n_tasks=2,
+                                                n_features=1024,
+                                                dropouts=0.5)
+    self.validation_callback(model)

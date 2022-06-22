@@ -1,11 +1,25 @@
 """
-Callback functions that can be invoked while fitting a KerasModel.
+Callback functions that can be invoked while fitting a KerasModel or TorchModel.
 """
 import sys
 
+tf_installed = False
+torch_installed = False
+try:
+  from deepchem.models.keras_model import KerasModel
+  tf_installed = True
+except ModuleNotFoundError:
+  pass
+try:
+  from deepchem.models.torch_models import TorchModel
+  import torch
+  torch_installed = True
+except ModuleNotFoundError:
+  pass
+
 
 class ValidationCallback(object):
-  """Performs validation while training a KerasModel.
+  """Performs validation while training a KerasModel or TorchModel.
 
   This is a callback that can be passed to fit().  It periodically computes a
   set of metrics over a validation set, writes them to a file, and keeps track
@@ -28,7 +42,9 @@ class ValidationCallback(object):
                save_dir=None,
                save_metric=0,
                save_on_minimum=True,
-               transformers=[]):
+               transformers=[],
+               prefix_logging='eval',
+               loss_logging=False):
     """Create a ValidationCallback.
 
     Parameters
@@ -55,6 +71,10 @@ class ValidationCallback(object):
       List of `dc.trans.Transformer` objects. These transformations
       must have been applied to `dataset` previously. The dataset will
       be untransformed for metric evaluation.
+    prefix_logging: str
+      prefix used for wandb logging, default: 'eval'
+    loss_logging: bool
+      if True, the loss of the current model on the given dataset is calculated
     """
     self.dataset = dataset
     self.interval = interval
@@ -65,13 +85,15 @@ class ValidationCallback(object):
     self.save_on_minimum = save_on_minimum
     self._best_score = None
     self.transformers = transformers
+    self.prefix_logging = prefix_logging
+    self.loss_logging = loss_logging
 
   def __call__(self, model, step):
-    """This is invoked by the KerasModel after every step of fitting.
+    """This is invoked by the KerasModel/TorchModel after every step of fitting.
 
     Parameters
     ----------
-    model: KerasModel
+    model: KerasModel or TorchModel
       the model that is being trained
     step: int
       the index of the training step that has just completed
@@ -94,13 +116,16 @@ class ValidationCallback(object):
       self._best_score = score
       if self.save_dir is not None:
         model.save_checkpoint(model_dir=self.save_dir)
+    # train_loss is calculated during training and logged as 'loss'
+    if self.loss_logging:
+      scores['vc_loss'] = self._calculate_loss(model)
     if model.wandb_logger is not None:
-      # Log data to Wandb
-      data = {'eval/' + k: v for k, v in scores.items()}
-      model.wandb_logger.log_data(data, step, dataset_id=id(self.dataset))
+      # Log data to WandB
+      data = {f'{self.prefix_logging}/{k}': v for k, v in scores.items()}
+      model.wandb_logger.log_data(data, step)
 
   def get_best_score(self):
-    """This getter returns the best score evaluated on the validation set.
+    """This getter returns the best score evaluated on the given dataset.
 
     Returns
     -------
@@ -111,3 +136,22 @@ class ValidationCallback(object):
       return self._best_score
     else:
       return -self._best_score
+
+  def _calculate_loss(self, model):
+    """Use model to predict output and calculate current loss on given dataset.
+
+    Returns
+    float
+      The current loss of the given dataset.
+    """
+    if torch_installed and isinstance(model, TorchModel):
+      outputs = torch.from_numpy(model.predict(self.dataset))
+      labels = torch.from_numpy(self.dataset.y)
+      weights = torch.from_numpy(self.dataset.w)
+      return model._loss_fn([outputs], [labels], [weights]).item()
+
+    elif tf_installed and isinstance(model, KerasModel):
+      outputs = model.predict(self.dataset)
+      labels = self.dataset.y
+      weights = self.dataset.w
+      return float(model._loss_fn([outputs], [labels], [weights]))
