@@ -24,7 +24,9 @@ class Model(object):
   Abstract base class for DeepChem models.
   """
 
-  def __init__(self, model=None, model_dir: Optional[str] = None,
+  def __init__(self,
+               model=None,
+               model_dir: Optional[str] = None,
                **kwargs) -> None:
     """Abstract class for all models.
 
@@ -126,7 +128,8 @@ class Model(object):
     raise NotImplementedError(
         "Each model is responsible for its own fit method.")
 
-  def predict(self, dataset: Dataset,
+  def predict(self,
+              dataset: Dataset,
               transformers: List[Transformer] = []) -> OneOrMany[np.ndarray]:
     """
     Uses self to make predictions on provided Dataset object.
@@ -229,3 +232,13 @@ class Model(object):
     Get number of tasks.
     """
     raise NotImplementedError
+
+  def loss_as_metric(self, y_true, y_predicted, sample_weight) -> float:
+    """Wrapper to make loss function of Model usable as Metric.
+
+    Metric expects the metric function to have the args:
+    y_true, y_pred, sample_weight
+    loss function uses [outputs], [labels], [weights]"""
+    loss = float(
+        self._loss_fn([y_predicted], [y_true], [sample_weight]).numpy())
+    return loss

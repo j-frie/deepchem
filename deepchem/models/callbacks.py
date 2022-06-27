@@ -2,20 +2,7 @@
 Callback functions that can be invoked while fitting a KerasModel or TorchModel.
 """
 import sys
-
-tf_installed = False
-torch_installed = False
-try:
-  from deepchem.models.keras_model import KerasModel
-  tf_installed = True
-except ModuleNotFoundError:
-  pass
-try:
-  from deepchem.models.torch_models import TorchModel
-  import torch
-  torch_installed = True
-except ModuleNotFoundError:
-  pass
+from deepchem.metrics import Metric
 
 
 class ValidationCallback(object):
@@ -32,6 +19,14 @@ class ValidationCallback(object):
   step on which the model writes to the log.  You should therefore make sure
   that this callback's reporting interval is an even fraction or multiple of
   the model's logging interval.
+
+  If loss_logging is enabled, then the loss is evaluated on the given dataset.
+  Please keep in mind that the value obtained for the loss in this callback
+  is usually different from the value obtained during training, even if the
+  same dataset is used. This can be due to the model being updated after each
+  loss calculation per batch (if batch size < size of dataset), dropout, or
+  batch normalization or any other different between training and evaluation
+  of the model.
   """
 
   def __init__(self,
@@ -44,7 +39,8 @@ class ValidationCallback(object):
                save_on_minimum=True,
                transformers=[],
                prefix_logging='eval',
-               loss_logging=False):
+               loss_logging=False,
+               model_task_type='regression'):
     """Create a ValidationCallback.
 
     Parameters
@@ -75,6 +71,8 @@ class ValidationCallback(object):
       prefix used for wandb logging, default: 'eval'
     loss_logging: bool
       if True, the loss of the current model on the given dataset is calculated
+    model_task_type: str ('regression' or 'classification')
+      needed only for loss_logging
     """
     self.dataset = dataset
     self.interval = interval
@@ -87,6 +85,7 @@ class ValidationCallback(object):
     self.transformers = transformers
     self.prefix_logging = prefix_logging
     self.loss_logging = loss_logging
+    self.model_task_type = model_task_type
 
   def __call__(self, model, step):
     """This is invoked by the KerasModel/TorchModel after every step of fitting.
@@ -101,6 +100,21 @@ class ValidationCallback(object):
     if step % self.interval != 0:
       return
     scores = model.evaluate(self.dataset, self.metrics, self.transformers)
+    # train_loss is calculated during training and logged as 'loss'
+    if self.loss_logging:
+      if self.model_task_type == 'regression':
+        loss_metric = Metric(model.loss_as_metric,
+                             name='vc_loss',
+                             mode='regression')
+      elif self.model_task_type == 'classification':
+        loss_metric = Metric(model.loss_as_metric,
+                             name='vc_loss',
+                             mode='classification',
+                             classification_handling_mode='direct')
+      scores.update(
+          model.evaluate(self.dataset, [loss_metric],
+                         transformers=[],
+                         use_sample_weights=True))
     message = 'Step %d validation:' % step
     for key in scores:
       message += ' %s=%g' % (key, scores[key])
@@ -116,9 +130,6 @@ class ValidationCallback(object):
       self._best_score = score
       if self.save_dir is not None:
         model.save_checkpoint(model_dir=self.save_dir)
-    # train_loss is calculated during training and logged as 'loss'
-    if self.loss_logging:
-      scores['vc_loss'] = self._calculate_loss(model)
     if model.wandb_logger is not None:
       # Log data to WandB
       data = {f'{self.prefix_logging}/{k}': v for k, v in scores.items()}
@@ -136,22 +147,3 @@ class ValidationCallback(object):
       return self._best_score
     else:
       return -self._best_score
-
-  def _calculate_loss(self, model):
-    """Use model to predict output and calculate current loss on given dataset.
-
-    Returns
-    float
-      The current loss of the given dataset.
-    """
-    if torch_installed and isinstance(model, TorchModel):
-      outputs = torch.from_numpy(model.predict(self.dataset))
-      labels = torch.from_numpy(self.dataset.y)
-      weights = torch.from_numpy(self.dataset.w)
-      return model._loss_fn([outputs], [labels], [weights]).item()
-
-    elif tf_installed and isinstance(model, KerasModel):
-      outputs = model.predict(self.dataset)
-      labels = self.dataset.y
-      weights = self.dataset.w
-      return float(model._loss_fn([outputs], [labels], [weights]))
